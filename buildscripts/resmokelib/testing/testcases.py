@@ -7,6 +7,7 @@ from __future__ import absolute_import
 import os
 import os.path
 import shutil
+import threading
 import unittest
 
 from .. import config
@@ -349,20 +350,44 @@ class JSTestCase(TestCase):
                             config.MONGO_RUNNER_SUBDIR)
 
     def run_test(self):
+        threads = []
         try:
-            shell = self._make_process()
-            self._execute(shell)
+            # Don't thread if there is only one client.
+            if config.NUM_CLIENTS_PER_FIXTURE == 1:
+                shell = self._make_process()
+                self._execute(shell)
+            else:
+                # If there are multiple, make a new thread for each client.
+                for i in range(config.NUM_CLIENTS_PER_FIXTURE):
+                    t = threading.Thread(target=self._run_test_in_thread, args=[i])
+                    t.start()
+                    threads.append(t)
+                for t in threads:
+                    t.join()
         except self.failureException:
             raise
         except:
             self.logger.exception("Encountered an error running jstest %s.", self.basename())
             raise
 
-    def _make_process(self):
-        return core.programs.mongo_shell_program(self.logger,
+    def _make_process(self, logger = None, thread_id = 0):
+        # If it isn't the main test, say so.
+        logger = utils.default_if_none(logger, self.logger)
+        is_main_test = True
+        if thread_id > 0:
+            is_main_test = False
+        return core.programs.mongo_shell_program(logger,
                                                  executable=self.shell_executable,
                                                  filename=self.js_filename,
+                                                 isMainTest=is_main_test,
                                                  **self.shell_options)
+
+    def _run_test_in_thread(self, thread_id):
+        # Make a logger for each thread.
+        logger = logging.loggers.new_logger(self.test_kind + ':' + str(thread_id),
+                                            parent=self.logger)
+        shell = self._make_process(logger, thread_id)
+        self._execute(shell)
 
 
 class MongosTestCase(TestCase):
